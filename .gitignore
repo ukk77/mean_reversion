@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.py[cod]
+.pytest_cache/
+
+# Virtualenv
+venv/
+
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Logs and outputs
+*.log
+logs/
+daily_results/
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
