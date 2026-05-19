@@ -71,6 +71,7 @@ def shares_to_buy(
     current_price: float,
     cfg: MeanReversionConfig,
     kelly_fraction: Optional[float] = None,
+    daily_volume: Optional[float] = None,
 ) -> int:
     """Return the number of whole shares to buy.
 
@@ -80,6 +81,7 @@ def shares_to_buy(
         current_price: Current price per share.
         cfg: Strategy configuration.
         kelly_fraction: Optional Kelly fraction from risk calculator.
+        daily_volume: Today's traded share volume (for ADV participation cap).
 
     Returns:
         Number of whole shares (>= 0).
@@ -87,4 +89,10 @@ def shares_to_buy(
     if current_price <= 0:
         return 0
     dollar_size = compute_position_dollars(signal, portfolio_value, cfg, kelly_fraction)
-    return max(0, int(dollar_size / current_price))
+    shares = max(0, int(dollar_size / current_price))
+    # ADV participation cap — avoid moving the market on large orders
+    adv_pct = cfg.portfolio_constraints.adv_participation_pct
+    if adv_pct > 0 and daily_volume is not None and daily_volume > 0:
+        max_adv_shares = int(daily_volume * adv_pct / 100.0)
+        shares = min(shares, max_adv_shares)
+    return shares

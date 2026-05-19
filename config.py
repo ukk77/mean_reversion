@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List
 
 
 @dataclass
@@ -11,9 +11,10 @@ class BollingerConfig:
     period: int = 20
     std_dev: float = 2.0
     entry_zscore: float = -2.0    # BUY when z-score <= this (price below lower band)
-    exit_zscore: float = 0.0      # EXIT (full) when z-score >= this (price reverts to mean)
-    partial_exit_zscore: float = -0.5   # Exit first tranche at this z-score
+    exit_zscore: float = 0.5      # EXIT (full) when z-score >= this (price reverts past mean)
+    partial_exit_zscore: float = -0.2   # Exit first tranche at this z-score
     partial_exit_fraction: float = 0.5  # Fraction to sell at partial exit (0 = disabled)
+    max_hold_days: int = 20       # Time stop — exit if held longer than this (0 = disabled)
 
 
 @dataclass
@@ -39,8 +40,10 @@ class ATRStopConfig:
     enabled: bool = True
     period: int = 14
     multiplier: float = 2.5       # Wider than trend following — allow oscillation
-    trail: bool = False           # No trailing for mean reversion (fixed stop from entry)
-    use_db_stop_when_available: bool = False
+    trail: bool = True           # Ratchet stop up each day as price rises (never moves down)
+    profit_stop_enabled: bool = True  # Trailing profit stop — exit if price falls N×ATR from peak since entry
+    profit_stop_atr_mult: float = 3.0  # ATR multiplier for profit stop (wider than stop-loss)
+    use_db_stop_when_available: bool = False  # Prefer suggested_stop_loss_pct from risk DB; fall back to local ATR
 
 
 @dataclass
@@ -54,7 +57,7 @@ class VolumeConfig:
 @dataclass
 class VolatilityRegimeConfig:
     """Volatility regime — scale down position size in high-vol periods."""
-    enabled: bool = False
+    enabled: bool = True
     period: int = 30
     low_vol_threshold: float = 0.15
     high_vol_threshold: float = 0.30
@@ -74,13 +77,43 @@ class ShortConfig:
 
 
 @dataclass
+class PortfolioConstraintsConfig:
+    """Cross-ticker portfolio risk and concentration limits.
+
+    Applied only when using run_portfolio_backtest(). The single-ticker
+    run_backtest() uses max_position_pct from PositionSizingConfig instead.
+    """
+    max_open_positions: int = 10           # max simultaneous positions (long+short); 0 = unlimited
+    max_sector_exposure_pct: float = 40.0  # max % of NAV in any one sector; 0 = unlimited
+    max_gross_exposure_pct: float = 100.0  # max (long+short notional) / NAV; 0 = unlimited
+    adv_participation_pct: float = 2.5     # cap order at this % of daily volume; 0 = unlimited
+
+
+# Sector classification used by portfolio constraint checks
+SECTOR_MAP: Dict[str, str] = {
+    "AAPL": "Technology",  "MSFT": "Technology",  "GOOGL": "Technology",
+    "META": "Technology",  "NVDA": "Technology",  "QQQ":  "Technology",
+    "XLK":  "Technology",
+    "AMZN": "Consumer Discretionary",  "TSLA": "Consumer Discretionary",
+    "JPM":  "Financials",  "XLF": "Financials",
+    "XOM":  "Energy",      "XLE": "Energy",
+    "LLY":  "Healthcare",  "UNH": "Healthcare",  "XLV": "Healthcare",
+    "WMT":  "Consumer Staples",         "XLP": "Consumer Staples",
+    "CAT":  "Industrials",
+    "XLU":  "Utilities",
+    "SPY":  "Diversified",  "IWM": "Diversified",
+    "GLD":  "Commodities",
+}
+
+
+@dataclass
 class SignalConfig:
     """Signal generation settings."""
-    sentiment_filter_enabled: bool = False
+    sentiment_filter_enabled: bool = True
     min_sentiment_confidence: float = 0.4
     block_on_negative_sentiment: bool = True
 
-    risk_filter_enabled: bool = False
+    risk_filter_enabled: bool = True
     max_risk_score: float = 75.0
 
 
@@ -94,7 +127,7 @@ class PositionSizingConfig:
     sentiment_neutral_mult: float = 0.8
     sentiment_disagree_mult: float = 0.5
 
-    use_kelly_fraction: bool = False
+    use_kelly_fraction: bool = True
     kelly_cap: float = 0.25
 
     vol_regime_db_enabled: bool = False
@@ -111,6 +144,7 @@ class BacktestConfig:
 
     benchmark_ticker: str = "SPY"
     compare_buy_and_hold: bool = True
+    abs_return_hurdle: float = 0.03  # Cash + hurdle benchmark: rf + this rate
 
 
 @dataclass
@@ -126,23 +160,27 @@ class MeanReversionConfig:
     position_sizing: PositionSizingConfig = field(default_factory=PositionSizingConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     short: ShortConfig = field(default_factory=ShortConfig)
+    portfolio_constraints: PortfolioConstraintsConfig = field(default_factory=PortfolioConstraintsConfig)
+    sector_map: Dict[str, str] = field(default_factory=lambda: dict(SECTOR_MAP))
 
     tickers: List[str] = field(default_factory=lambda: [
         # Tech / Communication
         "AAPL", "MSFT", "GOOGL", "META", "NVDA",
-        # Consumer Discretionary
-        "TSLA",
         # Financials
         "JPM",
         # Energy
         "XOM",
         # Healthcare
-        "LLY", "UNH",
+        "LLY",
         # Consumer Staples
         "WMT",
-        # Sector ETFs — more range-bound, better mean reversion candidates
-        "XLF", "XLE", "XLV", "XLU", "XLK", "XLP",
-        # Removed: AMZN (trends during drawdowns, PF 0.71), CAT (PF 0.56, win rate 52%)
+        # Sector ETFs — range-bound, good MR candidates
+        "XLE", "XLU", "XLK", "XLP",
+        # Broad market & diversifying ETFs
+        "IWM",   # Russell 2000 small caps — low correlation to tech holdings
+        "GLD",   # Gold — genuine hedge, near-zero equity correlation
+        # Removed: AMZN (trends, PF 0.71), CAT (PF 0.56), TSLA (PF 0.89),
+        #          UNH (PF 0.95), XLF (PF 0.94), XLV (PF 0.66), SPY (PF 0.85)
     ])
 
     lookback_days: int = 7300  # 20 calendar years → ~5040 trading days

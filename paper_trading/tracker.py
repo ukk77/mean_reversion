@@ -75,11 +75,13 @@ def _fetch_ohlc(ticker: str, lookback_days: int):
 
 def run_paper_trading(
     cfg: Optional[MeanReversionConfig] = None,
+    force: bool = False,
 ) -> List[Dict]:
     """Process today's mean reversion signals and update paper positions.
 
     Args:
-        cfg: Strategy configuration (uses defaults if None).
+        cfg:   Strategy configuration (uses defaults if None).
+        force: If True, skip the already-ran-today guard and run regardless.
 
     Returns:
         List of action dicts: one per ticker with signal, action taken, and P&L.
@@ -88,6 +90,12 @@ def run_paper_trading(
         cfg = MeanReversionConfig()
 
     paper_db.init_db()
+
+    if not force and paper_db.has_run_today():
+        log.warning(
+            "Paper trading already ran today — skipping. Pass force=True to override."
+        )
+        return []
     actions = []
 
     # ── Compute current portfolio value (cash + cost basis of open positions) ─
@@ -123,7 +131,7 @@ def run_paper_trading(
             continue
 
         current_price = float(ohlc["Close"].iloc[-1])
-        positions = {p["ticker"]: p for p in paper_db.get_positions()}
+        positions = {p["ticker"]: p for p in paper_db.get_positions(side="LONG")}
         pos = positions.get(ticker.upper(), {})
         held = pos.get("shares", 0)
         avg_cost = pos.get("avg_cost", 0.0)
@@ -157,17 +165,47 @@ def run_paper_trading(
                                  "reason": "ATR_STOP_HIT", "sentiment": None, "risk_score": None, "zscore": None})
                 continue
 
+            # Time stop — exit if held too long
+            if cfg.bollinger.max_hold_days > 0:
+                opened_str = pos.get("opened_at", "")
+                if opened_str:
+                    try:
+                        from datetime import datetime as _dt
+                        opened_date = _dt.fromisoformat(opened_str.replace("Z", "+00:00")).date()
+                        days_held = (_dt.utcnow().date() - opened_date).days
+                        if days_held >= cfg.bollinger.max_hold_days:
+                            gross_pnl = (current_price - avg_cost) * held
+                            commission = current_price * held * cfg.backtest.commission_pct
+                            net_pnl = gross_pnl - commission
+                            paper_db.log_trade(
+                                ticker=ticker, action="SELL", shares=held, price=current_price,
+                                commission=commission, pnl=net_pnl, reason="TIME_STOP",
+                                signal_strength=0.0,
+                            )
+                            paper_db.upsert_position(ticker, 0, 0.0, side="LONG")
+                            action_taken = "TIME_SELL"
+                            shares_traded = held
+                            pnl = net_pnl
+                            log.info("  TIME STOP: sold %d @ $%.2f (held %d days) | P&L: $%.2f",
+                                     held, current_price, days_held, net_pnl)
+                            actions.append({"ticker": ticker, "signal": "STOP", "action_taken": action_taken,
+                                             "shares": shares_traded, "price": current_price, "pnl": pnl,
+                                             "reason": "TIME_STOP", "sentiment": None, "risk_score": None, "zscore": None})
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
             if cfg.atr_stop.trail:
                 atr_ind = ATR(period=cfg.atr_stop.period)
                 atr_val = atr_ind.latest_atr(ohlc)
                 if atr_val > 0:
                     candidate = current_price - cfg.atr_stop.multiplier * atr_val
                     if candidate > stored_stop:
-                        paper_db.update_atr_stop(ticker, candidate)
+                        paper_db.update_atr_stop(ticker, candidate, side="LONG")
                         log.info("  ATR TRAIL updated: %.2f → %.2f", stored_stop, candidate)
 
         # ── ATR stop check on SHORT positions ────────────────────────────────
-        short_pos = positions.get(ticker.upper() + "_SHORT") or next(
+        short_pos = next(
             (p for p in paper_db.get_positions(side="SHORT") if p["ticker"] == ticker.upper()), {}
         )
         short_held = short_pos.get("shares", 0)
@@ -346,4 +384,5 @@ def run_paper_trading(
             }
         )
 
+    paper_db.record_daily_run(tickers_processed=len(cfg.tickers))
     return actions

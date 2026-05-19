@@ -29,8 +29,7 @@ from ..indicators.momentum import RSI
 from ..indicators.trend_strength import ADX
 from ..indicators.volatility import ATR, VolatilityRegime
 from ..indicators.volume import VolumeConfirmation
-
-Action = Literal["BUY", "SELL", "HOLD", "SHORT", "COVER", "PARTIAL_SELL", "PARTIAL_COVER"]
+from .filters import apply_mr_filters, Action
 
 _TRADING_ROOT = Path(__file__).resolve().parents[2]
 _SENTIMENT_DB = _TRADING_ROOT / "sentiment_analysis" / "backend" / "sentiment_history.db"
@@ -135,70 +134,42 @@ def generate_signal(
     else:
         filtered_action = "HOLD"
 
-    # ── Layer 2: ADX sideways market filter — block BUY/SHORT in trending markets ──
+    # ── Layer 2-4: Compute indicator snapshot values ────────────────────────
     adx_value: Optional[float] = None
-    if cfg.adx.enabled and filtered_action in ("BUY", "SHORT"):
+    if cfg.adx.enabled:
         adx_ind = ADX(period=cfg.adx.period, threshold=cfg.adx.max_adx)
         adx_value = adx_ind.latest_value(ohlc)
-        if adx_ind.is_trending(ohlc):
-            filtered_action = "HOLD"
-            reasons.append(f"adx={adx_value:.1f}>={cfg.adx.max_adx}(trending_market)")
-        else:
-            reasons.append(f"adx={adx_value:.1f}<{cfg.adx.max_adx}(ranging_OK)")
 
-    # ── Layer 3: RSI confirmation (oversold for BUY, overbought for SHORT) ────
     rsi_value: Optional[float] = None
     rsi_ind = RSI(period=cfg.rsi.period, oversold=cfg.rsi.oversold, overbought=cfg.rsi.overbought)
-    if cfg.rsi.enabled and filtered_action == "BUY":
+    if cfg.rsi.enabled or cfg.short.rsi_overbought_required:
         rsi_value = rsi_ind.latest_value(ohlc)
-        if not rsi_ind.is_oversold(ohlc):
-            filtered_action = "HOLD"
-            reasons.append(f"rsi={rsi_value:.1f}>={cfg.rsi.oversold}(not_oversold)")
-        else:
-            reasons.append(f"rsi={rsi_value:.1f}OK(oversold)")
-    elif cfg.short.rsi_overbought_required and filtered_action == "SHORT":
-        rsi_value = rsi_ind.latest_value(ohlc)
-        if not rsi_ind.is_overbought(ohlc):
-            filtered_action = "HOLD"
-            reasons.append(f"rsi={rsi_value:.1f}<={cfg.rsi.overbought}(not_overbought)")
-        else:
-            reasons.append(f"rsi={rsi_value:.1f}OK(overbought)")
 
-    # ── Layer 4: Volume confirmation ──────────────────────────────────────────
     volume_ratio: Optional[float] = None
-    if cfg.volume.enabled and filtered_action in ("BUY", "SHORT"):
-        vol_ind = VolumeConfirmation(
-            period=cfg.volume.period, min_ratio=cfg.volume.min_ratio
-        )
+    if cfg.volume.enabled:
+        vol_ind = VolumeConfirmation(period=cfg.volume.period, min_ratio=cfg.volume.min_ratio)
         volume_ratio = vol_ind.latest_ratio(ohlc)
-        if not vol_ind.is_confirmed(ohlc):
-            filtered_action = "HOLD"
-            reasons.append(f"vol_ratio={volume_ratio:.2f}<{cfg.volume.min_ratio}(low_vol)")
-        else:
-            reasons.append(f"vol_ratio={volume_ratio:.2f}OK")
 
-    # ── Layer 5: Sentiment filter (DB) ────────────────────────────────────────
+    # ── Layer 5-6: Shared filter pipeline ──────────────────────────────────
     sentiment_data = sentiment_override or _fetch_latest_sentiment(ticker)
     risk_data = risk_override or _fetch_latest_risk(ticker)
+
+    filtered_action, filter_reasons = apply_mr_filters(
+        raw_action=filtered_action,
+        zscore=zscore,
+        cfg=cfg,
+        adx_val=adx_value,
+        rsi_val=rsi_value,
+        vol_ratio=volume_ratio,
+        sentiment_data=sentiment_data,
+        risk_data=risk_data,
+    )
+    reasons.extend(filter_reasons)
 
     overall_sentiment = (sentiment_data or {}).get("overall_sentiment")
     conf = float((sentiment_data or {}).get("confidence") or 0.0)
     risk_score = (risk_data or {}).get("composite_risk_score")
     risk_bucket = (risk_data or {}).get("risk_bucket")
-
-    if filtered_action == "BUY" and cfg.signal.sentiment_filter_enabled:
-        if conf < cfg.signal.min_sentiment_confidence:
-            filtered_action = "HOLD"
-            reasons.append(f"low_conf={conf:.2f}<{cfg.signal.min_sentiment_confidence}")
-        elif cfg.signal.block_on_negative_sentiment and overall_sentiment == "negative":
-            filtered_action = "HOLD"
-            reasons.append("blocked:negative_sentiment")
-
-    # ── Layer 6: Risk filter (DB) ─────────────────────────────────────────────
-    if filtered_action == "BUY" and cfg.signal.risk_filter_enabled and risk_score is not None:
-        if risk_score > cfg.signal.max_risk_score:
-            filtered_action = "HOLD"
-            reasons.append(f"risk={risk_score:.1f}>{cfg.signal.max_risk_score}")
 
     # ── Layer 7: Volatility regime — position-size multiplier ────────────────
     vol_regime_mult: Optional[float] = None

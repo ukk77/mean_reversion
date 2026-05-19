@@ -62,6 +62,35 @@ class Portfolio:
     def is_short(self, ticker: str) -> bool:
         return self._short_positions.get(ticker, 0) > 0
 
+    def open_position_count(self) -> int:
+        """Total number of open positions (long + short combined)."""
+        return len(self._positions) + len(self._short_positions)
+
+    def long_notional(self, prices: Dict[str, float]) -> float:
+        """Total long notional value at current prices."""
+        return sum(self._positions.get(t, 0) * p for t, p in prices.items())
+
+    def short_notional(self, prices: Dict[str, float]) -> float:
+        """Total short notional value at current prices."""
+        return sum(self._short_positions.get(t, 0) * p for t, p in prices.items())
+
+    def gross_exposure(self, prices: Dict[str, float]) -> float:
+        """Total gross exposure: long notional + short notional."""
+        return self.long_notional(prices) + self.short_notional(prices)
+
+    def sector_exposure(
+        self, prices: Dict[str, float], sector_map: Dict[str, str]
+    ) -> Dict[str, float]:
+        """Gross exposure in dollars per sector (long + short combined)."""
+        exp: Dict[str, float] = {}
+        for ticker, shares in self._positions.items():
+            sector = sector_map.get(ticker, "Unknown")
+            exp[sector] = exp.get(sector, 0.0) + shares * prices.get(ticker, 0.0)
+        for ticker, shares in self._short_positions.items():
+            sector = sector_map.get(ticker, "Unknown")
+            exp[sector] = exp.get(sector, 0.0) + shares * prices.get(ticker, 0.0)
+        return exp
+
     def short_shares(self, ticker: str) -> int:
         return self._short_positions.get(ticker, 0)
 

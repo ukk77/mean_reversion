@@ -60,9 +60,50 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_mr_paper_trades_ticker
                 ON paper_trades(ticker, executed_at);
+
+            CREATE TABLE IF NOT EXISTS daily_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_date    TEXT    NOT NULL UNIQUE,
+                run_at      TEXT    NOT NULL,
+                tickers_processed INTEGER NOT NULL DEFAULT 0
+            );
             """
         )
         conn.commit()
+        # Migration: rebuild paper_positions if 'side' column or UNIQUE(ticker,side) is missing
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_positions)")}
+        has_correct_unique = False
+        for idx_row in conn.execute("PRAGMA index_list(paper_positions)"):
+            if idx_row[2] == 1:  # unique flag
+                idx_cols = {r[2] for r in conn.execute(f"PRAGMA index_info({idx_row[1]})")}
+                if "ticker" in idx_cols and "side" in idx_cols:
+                    has_correct_unique = True
+                    break
+        if "side" not in cols or not has_correct_unique:
+            conn.executescript(
+                """
+                DROP TABLE IF EXISTS paper_positions_new;
+                CREATE TABLE paper_positions_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker       TEXT    NOT NULL,
+                    side         TEXT    NOT NULL DEFAULT 'LONG',
+                    shares       INTEGER NOT NULL,
+                    avg_cost     REAL    NOT NULL,
+                    atr_stop     REAL,
+                    entry_zscore REAL,
+                    opened_at    TEXT    NOT NULL,
+                    updated_at   TEXT    NOT NULL,
+                    UNIQUE(ticker, side)
+                );
+                INSERT INTO paper_positions_new
+                    (id, ticker, side, shares, avg_cost, atr_stop, entry_zscore, opened_at, updated_at)
+                SELECT id, ticker, 'LONG', shares, avg_cost, atr_stop, entry_zscore, opened_at, updated_at
+                FROM paper_positions;
+                DROP TABLE paper_positions;
+                ALTER TABLE paper_positions_new RENAME TO paper_positions;
+                """
+            )
+            conn.commit()
 
 
 def upsert_position(
@@ -133,14 +174,14 @@ def log_trade(
         conn.commit()
 
 
-def update_atr_stop(ticker: str, new_stop: float) -> None:
+def update_atr_stop(ticker: str, new_stop: float, side: str = "LONG") -> None:
     """Update the stored ATR stop for an open position."""
     init_db()
     now = datetime.utcnow().isoformat() + "Z"
     with _get_conn() as conn:
         conn.execute(
-            "UPDATE paper_positions SET atr_stop=?, updated_at=? WHERE UPPER(ticker)=UPPER(?)",
-            (new_stop, now, ticker.upper()),
+            "UPDATE paper_positions SET atr_stop=?, updated_at=? WHERE UPPER(ticker)=UPPER(?) AND side=?",
+            (new_stop, now, ticker.upper(), side.upper()),
         )
         conn.commit()
 
@@ -254,3 +295,30 @@ def get_portfolio_snapshot(current_prices: Dict[str, float]) -> Dict[str, Any]:
             2,
         ),
     }
+
+
+def has_run_today() -> bool:
+    """Return True if paper trading has already been recorded for today's date."""
+    today = datetime.utcnow().date().isoformat()
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM daily_runs WHERE run_date = ?", (today,)
+        ).fetchone()
+    return row is not None
+
+
+def record_daily_run(tickers_processed: int) -> None:
+    """Insert or replace today's run record in daily_runs."""
+    today = datetime.utcnow().date().isoformat()
+    now = datetime.utcnow().isoformat() + "Z"
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO daily_runs (run_date, run_at, tickers_processed)
+            VALUES (?, ?, ?)
+            ON CONFLICT(run_date) DO UPDATE SET run_at=excluded.run_at,
+                tickers_processed=excluded.tickers_processed
+            """,
+            (today, now, tickers_processed),
+        )
+        conn.commit()

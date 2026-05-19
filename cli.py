@@ -158,9 +158,9 @@ def cmd_backtest(args) -> None:
     bench = cfg.backtest.benchmark_ticker.lower()
     print(
         f"{'TICKER':<10} {'RETURN%':>8} {'CAGR%':>7} {'SHARPE':>7} {'CALMAR':>7} "
-        f"{'MAX_DD%':>8} {'PF':>6} {'AVG_HOLD':>9} {'TRADES':>7} {'WIN%':>6}"
+        f"{'MAX_DD%':>8} {'PF':>6} {'AVG_HOLD':>9} {'TRADES':>7} {'WIN%':>6} {'ALPHA_C+3%':>11}"
     )
-    print("-" * 80)
+    print("-" * 92)
 
     rows = list(summary.results.items())
     if summary.portfolio_metrics:
@@ -169,12 +169,13 @@ def cmd_backtest(args) -> None:
     for ticker, result in rows:
         m = result.metrics
         hold_str = f"{m.get('avg_holding_days') or 0:.0f}d"
+        alpha_c3 = m.get("alpha_vs_cash_plus_3_pct")
         print(
             f"{ticker:<10} {m['total_return_pct']:>8.1f} {m['cagr_pct']:>7.1f} "
             f"{_fmt(m.get('sharpe')):>7} {_fmt(m.get('calmar')):>7} "
             f"{m['max_drawdown_pct']:>8.1f} {_fmt(m.get('profit_factor')):>6} "
             f"{hold_str:>9} "
-            f"{m['total_trades']:>7} {m['win_rate_pct']:>6.1f}"
+            f"{m['total_trades']:>7} {m['win_rate_pct']:>6.1f} {_fmt(alpha_c3):>11}"
         )
 
 
@@ -185,7 +186,7 @@ def cmd_paper(args) -> None:
     from mean_reversion.config import MeanReversionConfig
 
     cfg = MeanReversionConfig()
-    actions = run_paper_trading(cfg)
+    actions = run_paper_trading(cfg, force=getattr(args, "force", False))
 
     if args.json:
         print(json.dumps(actions, indent=2, default=str))
@@ -297,6 +298,7 @@ def main() -> None:
 
     # paper
     p_paper = subs.add_parser("paper", help="Run paper trading for today")
+    p_paper.add_argument("--force", action="store_true", help="Re-run even if already ran today")
     p_paper.set_defaults(func=cmd_paper)
 
     # positions
