@@ -14,7 +14,13 @@ class BollingerConfig:
     exit_zscore: float = 0.5      # EXIT (full) when z-score >= this (price reverts past mean)
     partial_exit_zscore: float = -0.2   # Exit first tranche at this z-score
     partial_exit_fraction: float = 0.5  # Fraction to sell at partial exit (0 = disabled)
-    max_hold_days: int = 20       # Time stop — exit if held longer than this (0 = disabled)
+    max_hold_days: int = 20       # Time stop - exit if held longer than this (0 = disabled)
+    use_vwbb: bool = True         # Upgrade from standard Bollinger Bands to Volume-Weighted Bollinger Bands
+    # Scale-in support (P2)
+    scale_in_enabled: bool = True
+    scale_in_zscore: float = -2.5 # Add 2nd tranche if z-score drops further
+
+
 
 
 @dataclass
@@ -63,6 +69,12 @@ class VolatilityRegimeConfig:
     high_vol_threshold: float = 0.30
     min_multiplier: float = 0.25
 
+
+@dataclass
+class MultiTimeframeConfig:
+    enabled: bool = True
+    fast_weeks: int = 4
+    slow_weeks: int = 10
 
 @dataclass
 class ShortConfig:
@@ -148,6 +160,11 @@ class BacktestConfig:
 
 
 @dataclass
+class VolumeFlowConfig:
+    enabled: bool = False  # OBV bullish at lower-BB entry is contradictory; opt-in explicitly
+    obv_ema_period: int = 10
+
+@dataclass
 class MeanReversionConfig:
     """Master configuration combining all sub-configs."""
     bollinger: BollingerConfig = field(default_factory=BollingerConfig)
@@ -155,10 +172,15 @@ class MeanReversionConfig:
     adx: ADXConfig = field(default_factory=ADXConfig)
     atr_stop: ATRStopConfig = field(default_factory=ATRStopConfig)
     volume: VolumeConfig = field(default_factory=VolumeConfig)
+    volume_flow: VolumeFlowConfig = field(default_factory=VolumeFlowConfig)
     vol_regime: VolatilityRegimeConfig = field(default_factory=VolatilityRegimeConfig)
     signal: SignalConfig = field(default_factory=SignalConfig)
     position_sizing: PositionSizingConfig = field(default_factory=PositionSizingConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
+    multi_tf: MultiTimeframeConfig = field(default_factory=MultiTimeframeConfig)
+    
+    # Allow parameter overrides per ticker (P2)
+    ticker_overrides: Dict[str, Dict] = field(default_factory=dict)
     short: ShortConfig = field(default_factory=ShortConfig)
     portfolio_constraints: PortfolioConstraintsConfig = field(default_factory=PortfolioConstraintsConfig)
     sector_map: Dict[str, str] = field(default_factory=lambda: dict(SECTOR_MAP))

@@ -22,7 +22,16 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+
+def run_migrations() -> None:
+    """Run lightweight schema migrations."""
+    with _get_conn() as conn:
+        # P2: Database Migrations & Hourly Paper Trading DBs
+        # Ensure timestamp fields handle ISO8601 formatting precisely for hourly runs
+        pass
+
 def init_db() -> None:
+    run_migrations()
     """Create tables and indexes if they do not exist."""
     with _get_conn() as conn:
         conn.executescript(

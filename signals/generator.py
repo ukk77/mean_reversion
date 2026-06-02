@@ -15,7 +15,8 @@ Stop  logic: ATR-based fixed stop — computed at entry, applied externally
 """
 from __future__ import annotations
 
-import sqlite3
+import os
+import requests
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,11 +25,11 @@ from typing import Dict, List, Literal, Optional
 import pandas as pd
 
 from ..config import MeanReversionConfig
-from ..indicators.bollinger import BollingerBands
+from ..indicators.bollinger import BollingerBands, VWBB
 from ..indicators.momentum import RSI
 from ..indicators.trend_strength import ADX
 from ..indicators.volatility import ATR, VolatilityRegime
-from ..indicators.volume import VolumeConfirmation
+from ..indicators.volume import VolumeConfirmation, OBV
 from .filters import apply_mr_filters, Action
 
 _TRADING_ROOT = Path(__file__).resolve().parents[2]
@@ -57,39 +58,31 @@ class Signal:
 
 
 def _fetch_latest_sentiment(ticker: str) -> Optional[dict]:
-    """Look up the most recent sentiment snapshot from the history DB."""
-    if not _SENTIMENT_DB.exists():
-        return None
+    """Look up the most recent sentiment snapshot from the API."""
+    url = os.getenv("SENTIMENT_API_URL", "http://localhost:8000")
     try:
-        with sqlite3.connect(str(_SENTIMENT_DB)) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT overall_sentiment, confidence, avg_sentiment "
-                "FROM sentiment_snapshots "
-                "WHERE UPPER(ticker)=UPPER(?) ORDER BY captured_at DESC LIMIT 1",
-                (ticker.upper(),),
-            ).fetchone()
-        return dict(row) if row else None
+        resp = requests.get(f"{url}/api/history/{ticker}?limit=1", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("snapshots") and len(data["snapshots"]) > 0:
+                return data["snapshots"][0]
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _fetch_latest_risk(ticker: str) -> Optional[dict]:
-    """Look up the most recent risk snapshot from the history DB."""
-    if not _RISK_DB.exists():
-        return None
+    """Look up the most recent risk snapshot from the API."""
+    url = os.getenv("RISK_API_URL", "http://localhost:8100")
     try:
-        with sqlite3.connect(str(_RISK_DB)) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT composite_risk_score, risk_bucket, overall_sentiment, upstream_confidence "
-                "FROM risk_snapshots "
-                "WHERE UPPER(ticker)=UPPER(?) ORDER BY captured_at DESC LIMIT 1",
-                (ticker.upper(),),
-            ).fetchone()
-        return dict(row) if row else None
+        resp = requests.get(f"{url}/api/history/{ticker}?limit=1", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("snapshots") and len(data["snapshots"]) > 0:
+                return data["snapshots"][0]
     except Exception:
-        return None
+        pass
+    return None
 
 
 def generate_signal(
@@ -115,7 +108,10 @@ def generate_signal(
     reasons: List[str] = []
 
     # ── Layer 1: Bollinger Band z-score ───────────────────────────────────────
-    bb = BollingerBands(period=cfg.bollinger.period, std_dev=cfg.bollinger.std_dev)
+    if getattr(cfg.bollinger, 'use_vwbb', False):
+        bb = VWBB(period=cfg.bollinger.period, std_dev=cfg.bollinger.std_dev)
+    else:
+        bb = BollingerBands(period=cfg.bollinger.period, std_dev=cfg.bollinger.std_dev)
     zscore = bb.latest_zscore(ohlc) or 0.0
     reasons.append(f"bb={bb.name} z={zscore:+.2f}")
 
@@ -150,6 +146,11 @@ def generate_signal(
         vol_ind = VolumeConfirmation(period=cfg.volume.period, min_ratio=cfg.volume.min_ratio)
         volume_ratio = vol_ind.latest_ratio(ohlc)
 
+    obv_bullish: bool = True
+    if getattr(cfg, 'volume_flow', None) and getattr(cfg.volume_flow, 'enabled', False):
+        obv_ind = OBV(ema_period=cfg.volume_flow.obv_ema_period)
+        obv_bullish = obv_ind.is_bullish(ohlc)
+
     # ── Layer 5-6: Shared filter pipeline ──────────────────────────────────
     sentiment_data = sentiment_override or _fetch_latest_sentiment(ticker)
     risk_data = risk_override or _fetch_latest_risk(ticker)
@@ -161,6 +162,7 @@ def generate_signal(
         adx_val=adx_value,
         rsi_val=rsi_value,
         vol_ratio=volume_ratio,
+        obv_bullish=obv_bullish,
         sentiment_data=sentiment_data,
         risk_data=risk_data,
     )

@@ -43,3 +43,32 @@ class VolumeConfirmation(Indicator):
         """Return True when current volume >= min_ratio * rolling average."""
         r = self.latest_ratio(ohlc)
         return r is not None and r >= self._min_ratio
+
+class OBV(Indicator):
+    """On-Balance Volume (OBV)."""
+
+    def __init__(self, ema_period: int = 10) -> None:
+        self._ema_period = ema_period
+
+    @property
+    def name(self) -> str:
+        return f"OBV({self._ema_period})"
+
+    def compute(self, ohlc: pd.DataFrame) -> IndicatorResult:
+        close = ohlc["Close"]
+        vol = ohlc["Volume"]
+        change = close.diff()
+        
+        direction = change.map(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        obv = (direction * vol).cumsum()
+        
+        obv_ema = obv.ewm(span=self._ema_period, adjust=False).mean()
+        return IndicatorResult(values=obv, raw=pd.DataFrame({"obv": obv, "obv_ema": obv_ema}), name=self.name)
+
+    def is_bullish(self, ohlc: pd.DataFrame) -> bool:
+        """Return True if OBV is above its EMA (accumulation)."""
+        res = self.compute(ohlc)
+        obv_df = res.raw.dropna()
+        if obv_df.empty: return False
+        last = obv_df.iloc[-1]
+        return float(last["obv"]) > float(last["obv_ema"])

@@ -19,6 +19,7 @@ def apply_mr_filters(
     adx_val: Optional[float] = None,
     rsi_val: Optional[float] = None,
     vol_ratio: Optional[float] = None,
+    obv_bullish: bool = True,
     sentiment_data: Optional[dict] = None,
     risk_data: Optional[dict] = None,
 ) -> tuple[Action, List[str]]:
@@ -59,7 +60,13 @@ def apply_mr_filters(
         elif vol_ratio is not None:
             reasons.append(f"vol_ratio={vol_ratio:.2f}OK")
 
-    # ── Sentiment filter (DB) ────────────────────────────────────────────
+    # ── Volume Flow / OBV filter (P2) ─────────────────────────────────────────────────────────────
+    if getattr(cfg, 'volume_flow', None) and getattr(cfg.volume_flow, 'enabled', False) and filtered == "BUY":
+        if not obv_bullish:
+            filtered = "HOLD"
+            reasons.append("obv=bearish(distribution)")
+
+    # ── Sentiment filter (DB) ─────────────────────────────────────────────────────────────
     overall_sentiment = (sentiment_data or {}).get("overall_sentiment")
     conf = float((sentiment_data or {}).get("confidence") or 0.0)
 

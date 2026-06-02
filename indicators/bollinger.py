@@ -81,3 +81,74 @@ class BollingerBands(Indicator):
     def zscore_series(self, ohlc: pd.DataFrame) -> pd.Series:
         """Convenience alias for the z-score series."""
         return self.compute(ohlc).values
+
+
+class VWBB(Indicator):
+    """Volume-Weighted Bollinger Bands.
+    
+    Instead of an SMA middle band, it uses a Moving VWAP.
+    Instead of standard deviation, it uses volume-weighted standard deviation.
+    """
+
+    def __init__(self, period: int = 20, std_dev: float = 2.0) -> None:
+        self._period = period
+        self._std_dev = std_dev
+
+    @property
+    def name(self) -> str:
+        return f"VWBB({self._period},{self._std_dev})"
+
+    def compute(self, ohlc: pd.DataFrame) -> IndicatorResult:
+        close = ohlc["Close"]
+        vol = ohlc["Volume"]
+        
+        # Middle band is Moving VWAP
+        pv = close * vol
+        sum_pv = pv.rolling(self._period, min_periods=self._period).sum()
+        sum_v = vol.rolling(self._period, min_periods=self._period).sum()
+        middle = sum_pv / sum_v.replace(0.0, np.nan)
+        
+        # Volume-weighted standard deviation
+        # Variance = Sum(Volume * (Price - VWAP)^2) / Sum(Volume)
+        variance = (vol * (close - middle)**2).rolling(self._period, min_periods=self._period).sum() / sum_v.replace(0.0, np.nan)
+        std = np.sqrt(variance)
+        
+        upper = middle + self._std_dev * std
+        lower = middle - self._std_dev * std
+        zscore = (close - middle) / std.replace(0.0, np.nan)
+        
+        return IndicatorResult(
+            values=zscore,
+            raw=pd.DataFrame(
+                {
+                    "middle": middle,
+                    "upper": upper,
+                    "lower": lower,
+                    "zscore": zscore,
+                    "std": std,
+                }
+            ),
+            name=self.name,
+        )
+
+    def signal_series(self, ohlc: pd.DataFrame) -> pd.Series:
+        return self.compute(ohlc).values
+
+    def latest_zscore(self, ohlc: pd.DataFrame) -> Optional[float]:
+        zs = self.compute(ohlc).values.dropna()
+        return float(zs.iloc[-1]) if not zs.empty else None
+
+    def is_below_lower_band(
+        self, ohlc: pd.DataFrame, threshold: float = -2.0
+    ) -> bool:
+        zs = self.latest_zscore(ohlc)
+        return zs is not None and zs <= threshold
+
+    def is_at_or_above_mean(
+        self, ohlc: pd.DataFrame, threshold: float = 0.0
+    ) -> bool:
+        zs = self.latest_zscore(ohlc)
+        return zs is not None and zs >= threshold
+
+    def zscore_series(self, ohlc: pd.DataFrame) -> pd.Series:
+        return self.compute(ohlc).values

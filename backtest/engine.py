@@ -34,12 +34,12 @@ from ..indicators.bollinger import BollingerBands
 from ..indicators.momentum import RSI
 from ..indicators.trend_strength import ADX
 from ..indicators.volatility import ATR, VolatilityRegime
-from ..indicators.volume import VolumeConfirmation
+from ..indicators.volume import VolumeConfirmation, OBV
 from ..position_sizing.sizer import shares_to_buy
 from ..signals.generator import Action, Signal
 from ..signals.filters import apply_mr_filters
-from .metrics import compute_all_metrics
-from .portfolio import Portfolio
+from trading_core import compute_all_metrics
+from trading_core import Portfolio
 
 
 # ── History DB helpers ────────────────────────────────────────────────────────
@@ -190,6 +190,12 @@ def _run_single_ticker(
         .compute(ohlc).raw["ratio"]
         if cfg.volume.enabled else None
     )
+    _obv_cfg = getattr(cfg, 'volume_flow', None)
+    obv_bullish_series = (
+        OBV(ema_period=_obv_cfg.obv_ema_period).compute(ohlc).raw
+        .apply(lambda r: r["obv"] > r["obv_ema"], axis=1)
+        if (_obv_cfg and getattr(_obv_cfg, 'enabled', False)) else None
+    )
     vol_regime_series = (
         VolatilityRegime(
             period=cfg.vol_regime.period,
@@ -219,6 +225,8 @@ def _run_single_ticker(
     atr_stops: dict = {}       # ticker -> long stop (stop-out if price <= stop)
     short_stops: dict = {}     # ticker -> short stop (stop-out if price >= stop)
     entry_dates: dict = {}     # ticker -> entry date (for time stop)
+    peak_prices: dict = {}     # ticker -> peak price since entry (profit trailing stop)
+    scale_in_done: dict = {}   # ticker -> bool, second tranche already added
 
     valid_dates = zscore_series.dropna().index
 
@@ -271,6 +279,22 @@ def _run_single_ticker(
                     if ticker in atr_stops:
                         atr_stops[ticker] = max(atr_stops[ticker], candidate)
 
+            # Peak tracking + profit trailing stop
+            if cfg.atr_stop.profit_stop_enabled:
+                peak_prices[ticker] = max(peak_prices.get(ticker, current_price), current_price)
+                _atr_v = _val(atr_series, dt, 0.0)
+                if _atr_v > 0:
+                    profit_stop = peak_prices[ticker] - cfg.atr_stop.profit_stop_atr_mult * _atr_v
+                    if current_price <= profit_stop:
+                        exec_price = current_price * (1.0 - slippage)
+                        portfolio.sell_all(ticker, exec_price, date_str)
+                        atr_stops.pop(ticker, None)
+                        peak_prices.pop(ticker, None)
+                        scale_in_done.pop(ticker, None)
+                        entry_dates.pop(ticker, None)
+                        portfolio.record_equity(date_str, {ticker: current_price})
+                        continue
+
         # ── ATR stop check on short positions ─────────────────────────────────
         if cfg.atr_stop.enabled and portfolio.is_short(ticker):
             if ticker in short_stops and current_price >= short_stops[ticker]:
@@ -297,6 +321,8 @@ def _run_single_ticker(
             filtered_action = "HOLD"
 
         # ── Shared filter pipeline ──────────────────────────────────────
+        _obv_cfg_st = getattr(cfg, 'volume_flow', None)
+        _obv_bull = bool(_val(obv_bullish_series, dt)) if (_obv_cfg_st and getattr(_obv_cfg_st, 'enabled', False) and obv_bullish_series is not None) else True
         filtered_action, _filter_reasons = apply_mr_filters(
             raw_action=filtered_action,
             zscore=zscore,
@@ -304,6 +330,7 @@ def _run_single_ticker(
             adx_val=_val(adx_series, dt) if cfg.adx.enabled else None,
             rsi_val=_val(rsi_series, dt) if (cfg.rsi.enabled or cfg.short.rsi_overbought_required) else None,
             vol_ratio=_val(vol_ratio_series, dt) if cfg.volume.enabled else None,
+            obv_bullish=_obv_bull,
             sentiment_data=sent_snap,
             risk_data=risk_snap,
         )
@@ -339,6 +366,7 @@ def _run_single_ticker(
                                      kelly_fraction=kelly_fraction, daily_volume=daily_volume)
             if n_shares > 0 and portfolio.buy(ticker, n_shares, exec_price, date_str):
                 entry_dates[ticker] = dt_date
+                peak_prices[ticker] = exec_price
                 if cfg.atr_stop.enabled:
                     stop_price = None
                     if cfg.atr_stop.use_db_stop_when_available and db_suggested_stop_pct is not None:
@@ -350,12 +378,34 @@ def _run_single_ticker(
                     if stop_price is not None:
                         atr_stops[ticker] = stop_price
 
+        elif (cfg.bollinger.scale_in_enabled and
+              not scale_in_done.get(ticker, False) and
+              portfolio.is_invested(ticker) and not portfolio.is_short(ticker) and
+              zscore <= cfg.bollinger.scale_in_zscore and
+              filtered_action == "BUY"):
+            _scale_sig = Signal(
+                ticker=ticker, date=date_str, action="BUY",
+                zscore=zscore,
+                filtered_strength=abs(zscore / cfg.bollinger.entry_zscore) * vol_mult,
+                reason="scale_in",
+                sentiment=overall_sentiment,
+                sentiment_confidence=conf if conf > 0 else None,
+                risk_score=risk_score,
+            )
+            scale_n = shares_to_buy(_scale_sig, current_portfolio_value * 0.5,
+                                    exec_price, cfg, kelly_fraction=kelly_fraction,
+                                    daily_volume=daily_volume)
+            if scale_n > 0 and portfolio.buy(ticker, scale_n, exec_price, date_str):
+                scale_in_done[ticker] = True
+
         elif filtered_action == "PARTIAL_SELL" and portfolio.is_invested(ticker):
             portfolio.partial_sell(ticker, cfg.bollinger.partial_exit_fraction, exec_price, date_str)
 
         elif filtered_action == "SELL" and portfolio.is_invested(ticker):
             portfolio.sell_all(ticker, exec_price, date_str)
             atr_stops.pop(ticker, None)
+            peak_prices.pop(ticker, None)
+            scale_in_done.pop(ticker, None)
 
         elif filtered_action == "SHORT" and not portfolio.is_short(ticker) and not portfolio.is_invested(ticker):
             n_shares = shares_to_buy(sig, current_portfolio_value, exec_price, cfg,
@@ -536,6 +586,12 @@ def _precompute_indicators(
         .compute(ohlc).raw["ratio"]
         if cfg.volume.enabled else None
     )
+    _obv_cfg_p = getattr(cfg, 'volume_flow', None)
+    obv_bullish_s = (
+        OBV(ema_period=_obv_cfg_p.obv_ema_period).compute(ohlc).raw
+        .apply(lambda r: r["obv"] > r["obv_ema"], axis=1)
+        if (_obv_cfg_p and getattr(_obv_cfg_p, 'enabled', False)) else None
+    )
     vol_regime = (
         VolatilityRegime(
             period=cfg.vol_regime.period,
@@ -556,6 +612,7 @@ def _precompute_indicators(
         "rsi": rsi,
         "adx": adx,
         "vol_ratio": vol_ratio,
+        "obv_bullish": obv_bullish_s,
         "vol_regime": vol_regime,
         "atr": atr,
         "sentiment_hist": _load_sentiment_history(ticker),
@@ -604,6 +661,8 @@ def run_portfolio_backtest(
     atr_stops: Dict[str, float] = {}
     short_stops: Dict[str, float] = {}
     entry_dates: Dict[str, object] = {}
+    peak_prices: Dict[str, float] = {}
+    scale_in_done: Dict[str, bool] = {}
     last_prices: Dict[str, float] = {}
 
     for dt in all_dates:
@@ -629,18 +688,34 @@ def run_portfolio_backtest(
                 if ticker in atr_stops and cp <= atr_stops[ticker]:
                     portfolio.sell_all(ticker, cp * (1.0 - slippage), date_str)
                     atr_stops.pop(ticker, None)
+                    peak_prices.pop(ticker, None)
+                    scale_in_done.pop(ticker, None)
                     entry_dates.pop(ticker, None)
                     continue
                 if cfg.bollinger.max_hold_days > 0 and ticker in entry_dates:
                     if (dt_date - entry_dates[ticker]).days >= cfg.bollinger.max_hold_days:
                         portfolio.sell_all(ticker, cp * (1.0 - slippage), date_str)
                         atr_stops.pop(ticker, None)
+                        peak_prices.pop(ticker, None)
+                        scale_in_done.pop(ticker, None)
                         entry_dates.pop(ticker, None)
                         continue
                 if cfg.atr_stop.trail:
                     atr_v = _val_at(ind["atr"], dt, 0.0)
                     if atr_v > 0 and ticker in atr_stops:
                         atr_stops[ticker] = max(atr_stops[ticker], cp - cfg.atr_stop.multiplier * atr_v)
+                if cfg.atr_stop.profit_stop_enabled:
+                    peak_prices[ticker] = max(peak_prices.get(ticker, cp), cp)
+                    _atr_v = _val_at(ind["atr"], dt, 0.0)
+                    if _atr_v > 0:
+                        profit_stop = peak_prices[ticker] - cfg.atr_stop.profit_stop_atr_mult * _atr_v
+                        if cp <= profit_stop:
+                            portfolio.sell_all(ticker, cp * (1.0 - slippage), date_str)
+                            atr_stops.pop(ticker, None)
+                            peak_prices.pop(ticker, None)
+                            scale_in_done.pop(ticker, None)
+                            entry_dates.pop(ticker, None)
+                            continue
 
             if cfg.atr_stop.enabled and portfolio.is_short(ticker):
                 if ticker in short_stops and cp >= short_stops[ticker]:
@@ -683,11 +758,14 @@ def run_portfolio_backtest(
             else:
                 raw_action = "HOLD"
 
+            _obv_cfg_p2 = getattr(cfg, 'volume_flow', None)
+            _obv_bull_p = bool(_val_at(ind["obv_bullish"], dt)) if (_obv_cfg_p2 and getattr(_obv_cfg_p2, 'enabled', False) and ind.get("obv_bullish") is not None) else True
             filtered_action, _ = apply_mr_filters(
                 raw_action=raw_action, zscore=zs, cfg=cfg,
                 adx_val=_val_at(ind["adx"], dt) if cfg.adx.enabled else None,
                 rsi_val=_val_at(ind["rsi"], dt) if (cfg.rsi.enabled or cfg.short.rsi_overbought_required) else None,
                 vol_ratio=_val_at(ind["vol_ratio"], dt) if cfg.volume.enabled else None,
+                obv_bullish=_obv_bull_p,
                 sentiment_data=sent_snap, risk_data=risk_snap,
             )
             vol_mult = _val_at(ind["vol_regime"], dt, 1.0) if cfg.vol_regime.enabled else 1.0
@@ -714,12 +792,20 @@ def run_portfolio_backtest(
                 entries.append((ticker, "BUY", sig, cp * (1.0 + slippage), kelly_frac, db_stop, daily_vol, cp))
             elif filtered_action == "SHORT" and not portfolio.is_short(ticker) and not portfolio.is_invested(ticker):
                 entries.append((ticker, "SHORT", sig, cp * (1.0 - slippage), kelly_frac, db_stop, daily_vol, cp))
+            elif (cfg.bollinger.scale_in_enabled and
+                  not scale_in_done.get(ticker, False) and
+                  portfolio.is_invested(ticker) and not portfolio.is_short(ticker) and
+                  zs <= cfg.bollinger.scale_in_zscore and
+                  filtered_action == "BUY"):
+                entries.append((ticker, "SCALE_IN", sig, cp * (1.0 + slippage), kelly_frac, db_stop, daily_vol, cp))
 
         # ── Execute exits first ────────────────────────────────────────────────
         for ticker, action, exec_price in exits:
             if action == "SELL":
                 portfolio.sell_all(ticker, exec_price, date_str)
                 atr_stops.pop(ticker, None)
+                peak_prices.pop(ticker, None)
+                scale_in_done.pop(ticker, None)
                 entry_dates.pop(ticker, None)
             elif action == "PARTIAL_SELL":
                 portfolio.partial_sell(ticker, cfg.bollinger.partial_exit_fraction, exec_price, date_str)
@@ -754,6 +840,7 @@ def run_portfolio_backtest(
             if action == "BUY":
                 if portfolio.buy(ticker, n_shares, exec_price, date_str):
                     entry_dates[ticker] = dt_date
+                    peak_prices[ticker] = exec_price
                     if cfg.atr_stop.enabled:
                         if db_stop is not None and cfg.atr_stop.use_db_stop_when_available:
                             atr_stops[ticker] = exec_price * (1.0 + db_stop)
@@ -765,6 +852,11 @@ def run_portfolio_backtest(
                     sect = sm.get(ticker, "Unknown")
                     sector_exp[sect] = sector_exp.get(sect, 0.0) + n_shares * cp
                     open_count += 1
+            elif action == "SCALE_IN":
+                scale_n = shares_to_buy(sig, current_nav * 0.5, exec_price, cfg,
+                                        kelly_fraction=kelly_frac, daily_volume=daily_vol)
+                if scale_n > 0 and portfolio.buy(ticker, scale_n, exec_price, date_str):
+                    scale_in_done[ticker] = True
             else:  # SHORT
                 if portfolio.short(ticker, n_shares, exec_price, date_str):
                     atr_v = _val_at(all_ind[ticker]["atr"], dt, 0.0)
