@@ -111,7 +111,7 @@ def run_paper_trading(
     )
 
     for ticker in cfg.tickers:
-        log.info("── %s ──", ticker)
+        log.info("== %s ==", ticker)
 
         try:
             ohlc = _fetch_ohlc(ticker, cfg.lookback_days)
