@@ -103,19 +103,26 @@ class PortfolioConstraintsConfig:
 
 # Sector classification used by portfolio constraint checks
 SECTOR_MAP: Dict[str, str] = {
+    "KMI": "Energy",
+    "EQT": "Energy",
     "AAPL": "Technology",  "MSFT": "Technology",  "GOOGL": "Technology",
     "META": "Technology",  "NVDA": "Technology",  "QQQ":  "Technology",
-    "XLK":  "Technology",
+    "XLK":  "Technology", "SMCI": "Technology",
     "MU": "Technology", "LITE": "Technology", "NVTS": "Technology", "ASML": "Technology",
     "AMZN": "Consumer Discretionary",  "TSLA": "Consumer Discretionary",
-    "JPM":  "Financials",  "XLF": "Financials",
+    "HD": "Consumer Discretionary", "MCD": "Consumer Discretionary", "BABA": "Consumer Discretionary",
+    "JPM":  "Financials",  "XLF": "Financials", "V": "Financials", "MA": "Financials", "BRK.B": "Financials", "MARA": "Financials",
     "XOM":  "Energy",      "XLE": "Energy",
     "LLY":  "Healthcare",  "UNH": "Healthcare",  "XLV": "Healthcare",
-    "WMT":  "Consumer Staples",         "XLP": "Consumer Staples",
-    "CAT":  "Industrials",
+    "ABBV": "Healthcare", "MRK": "Healthcare", "JNJ": "Healthcare",
+    "WMT":  "Consumer Staples",         "XLP": "Consumer Staples", "COST": "Consumer Staples",
+    "CAT":  "Industrials", "GE": "Industrials", "LMT": "Industrials", "RTX": "Industrials", "BA": "Industrials",
+    "FCX": "Materials", "NUE": "Materials", "XLB": "Materials",
     "XLU":  "Utilities",
-    "SPY":  "Diversified",  "IWM": "Diversified",
+    "XLRE": "Real Estate",
+    "SPY":  "Diversified",  "IWM": "Diversified", "SQQQ": "Inverse",
     "GLD":  "Commodities",
+    "TLT": "Fixed Income",
 }
 
 
@@ -191,7 +198,7 @@ class MeanReversionConfig:
         "AAPL", "MSFT", "GOOGL", "META", "NVDA",
         "MU", "LITE", "NVTS", "ASML",
         # Financials
-        "JPM",
+        "JPM", "BRK.B",
         # Energy
         "XOM",
         # Healthcare
@@ -199,12 +206,12 @@ class MeanReversionConfig:
         # Consumer Staples
         "WMT",
         # Sector ETFs — range-bound, good MR candidates
-        "XLE", "XLU", "XLK", "XLP",
+        "XLE", "XLU", "XLK", "XLP", "XLF", "XLV", "XLB", "XLRE",
         # Broad market & diversifying ETFs
         "IWM",   # Russell 2000 small caps — low correlation to tech holdings
         "GLD",   # Gold — genuine hedge, near-zero equity correlation
-        # Removed: AMZN (trends, PF 0.71), CAT (PF 0.56), TSLA (PF 0.89),
-        #          UNH (PF 0.95), XLF (PF 0.94), XLV (PF 0.66), SPY (PF 0.85)
+        # Stress tests for extreme dips
+        "BA", "BABA"
     ])
 
     lookback_days: int = 7300  # 20 calendar years → ~5040 trading days
