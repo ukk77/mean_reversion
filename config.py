@@ -194,6 +194,7 @@ class MeanReversionConfig:
     sector_map: Dict[str, str] = field(default_factory=lambda: dict(SECTOR_MAP))
 
     tickers: List[str] = field(default_factory=lambda: [
+        'EQT', 'KMI',
         # Tech / Communication
         "AAPL", "MSFT", "GOOGL", "META", "NVDA",
         "MU", "LITE", "NVTS", "ASML",
