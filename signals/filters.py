@@ -69,6 +69,7 @@ def apply_mr_filters(
     # ── Sentiment filter (DB) ─────────────────────────────────────────────────────────────
     overall_sentiment = (sentiment_data or {}).get("overall_sentiment")
     conf = float((sentiment_data or {}).get("confidence") or 0.0)
+    contrarian_signal = (sentiment_data or {}).get("contrarian_signal")
 
     if filtered == "BUY" and cfg.signal.sentiment_filter_enabled and sentiment_data is not None:
         if conf < cfg.signal.min_sentiment_confidence:
@@ -77,6 +78,13 @@ def apply_mr_filters(
         elif cfg.signal.block_on_negative_sentiment and overall_sentiment == "negative":
             filtered = "HOLD"
             reasons.append("blocked:negative_sentiment")
+        # Contrarian: extreme bullish is cautionary for mean reversion (crowded long)
+        elif contrarian_signal == "extreme_bullish_caution":
+            filtered = "HOLD"
+            reasons.append("contrarian:extreme_bullish_caution")
+        # Contrarian: extreme bearish is opportunity for mean reversion (oversold + fear)
+        elif contrarian_signal == "extreme_bearish_opportunity":
+            reasons.append("contrarian:extreme_bearish_opportunity(enhanced)")
 
     # ── Risk filter (DB) ─────────────────────────────────────────────────
     risk_score = (risk_data or {}).get("composite_risk_score")

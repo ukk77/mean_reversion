@@ -103,26 +103,30 @@ class PortfolioConstraintsConfig:
 
 # Sector classification used by portfolio constraint checks
 SECTOR_MAP: Dict[str, str] = {
-    "KMI": "Energy",
-    "EQT": "Energy",
-    "AAPL": "Technology",  "MSFT": "Technology",  "GOOGL": "Technology",
-    "META": "Technology",  "NVDA": "Technology",  "QQQ":  "Technology",
-    "XLK":  "Technology", "SMCI": "Technology",
-    "MU": "Technology", "LITE": "Technology", "NVTS": "Technology", "ASML": "Technology",
-    "AMZN": "Consumer Discretionary",  "TSLA": "Consumer Discretionary",
-    "HD": "Consumer Discretionary", "MCD": "Consumer Discretionary", "BABA": "Consumer Discretionary",
-    "JPM":  "Financials",  "XLF": "Financials", "V": "Financials", "MA": "Financials", "BRK.B": "Financials", "MARA": "Financials",
-    "XOM":  "Energy",      "XLE": "Energy",
-    "LLY":  "Healthcare",  "UNH": "Healthcare",  "XLV": "Healthcare",
-    "ABBV": "Healthcare", "MRK": "Healthcare", "JNJ": "Healthcare",
-    "WMT":  "Consumer Staples",         "XLP": "Consumer Staples", "COST": "Consumer Staples",
-    "CAT":  "Industrials", "GE": "Industrials", "LMT": "Industrials", "RTX": "Industrials", "BA": "Industrials",
-    "FCX": "Materials", "NUE": "Materials", "XLB": "Materials",
-    "XLU":  "Utilities",
+    # Energy
+    "EQT": "Energy", "KMI": "Energy", "WMB": "Energy", "XOM": "Energy", "XLE": "Energy",
+    # Financials
+    "JPM": "Financials", "BRK.B": "Financials", "XLF": "Financials",
+    # Healthcare
+    "LLY": "Healthcare", "XLV": "Healthcare",
+    # Consumer Staples
+    "WMT": "Consumer Staples", "XLP": "Consumer Staples",
+    # Consumer Discretionary
+    "BABA": "Consumer Discretionary",
+    # Industrials
+    "BA": "Industrials",
+    # Technology ETF
+    "XLK": "Technology",
+    # Utilities ETF
+    "XLU": "Utilities",
+    # Materials ETF
+    "XLB": "Materials",
+    # Real Estate ETF
     "XLRE": "Real Estate",
-    "SPY":  "Diversified",  "IWM": "Diversified", "SQQQ": "Inverse",
-    "GLD":  "Commodities",
-    "TLT": "Fixed Income",
+    # Diversified
+    "IWM": "Diversified",
+    # Commodities
+    "GLD": "Commodities",
 }
 
 
@@ -194,25 +198,24 @@ class MeanReversionConfig:
     sector_map: Dict[str, str] = field(default_factory=lambda: dict(SECTOR_MAP))
 
     tickers: List[str] = field(default_factory=lambda: [
-        'EQT', 'KMI',
-        # Tech / Communication
-        "AAPL", "MSFT", "GOOGL", "META", "NVDA",
-        "MU", "LITE", "NVTS", "ASML",
+        # Energy — range-bound pipelines/producers
+        "EQT", "KMI", "WMB", "XOM", "XLE",
         # Financials
-        "JPM", "BRK.B",
-        # Energy
-        "XOM",
+        "JPM", "BRK.B", "XLF",
         # Healthcare
-        "LLY",
+        "LLY", "XLV",
         # Consumer Staples
-        "WMT",
-        # Sector ETFs — range-bound, good MR candidates
-        "XLE", "XLU", "XLK", "XLP", "XLF", "XLV", "XLB", "XLRE",
-        # Broad market & diversifying ETFs
-        "IWM",   # Russell 2000 small caps — low correlation to tech holdings
-        "GLD",   # Gold — genuine hedge, near-zero equity correlation
-        # Stress tests for extreme dips
-        "BA", "BABA"
+        "WMT", "XLP",
+        # Consumer Discretionary
+        "BABA",
+        # Industrials
+        "BA",
+        # Sector ETFs — range-bound, ideal MR candidates
+        "XLK", "XLU", "XLB", "XLRE",
+        # Broad market
+        "IWM",
+        # Commodities
+        "GLD",
     ])
 
     lookback_days: int = 7300  # 20 calendar years → ~5040 trading days
