@@ -11,12 +11,13 @@ Designed to be called daily, either:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 _TRADING_ROOT = Path(__file__).resolve().parents[2]
-_RISK_BACKEND = _TRADING_ROOT / "risk_calculator" / "backend"
+_RISK_BACKEND = Path(os.getenv("RISK_CALCULATOR_BACKEND", str(_TRADING_ROOT / "risk_calculator" / "backend")))
 if str(_RISK_BACKEND) not in sys.path:
     sys.path.insert(0, str(_RISK_BACKEND))
 
@@ -48,7 +49,8 @@ TICKER_NAMES = {
     "XLP": "Consumer Staples Select Sector SPDR",
 }
 
-_TF_DB_PATH = Path(__file__).resolve().parents[2] / "trend_following" / "paper_trades.db"
+_TF_DB_PATH = Path(os.getenv("TF_PAPER_DB_PATH",
+    str(_TRADING_ROOT / "trend_following" / "paper_trades.db")))
 
 
 def _tf_position_size(ticker: str) -> int:

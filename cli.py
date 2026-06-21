@@ -180,7 +180,9 @@ def cmd_backtest(args) -> None:
 
 
 def cmd_paper(args) -> None:
-    """Run paper trading — process today's signals and update positions."""
+    """[DEPRECATED] Use: python -m harness.cli signal_generation
+    Paper trading is now owned by the harness. This command is kept for dev/debug only.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     from mean_reversion.paper_trading.tracker import run_paper_trading
     from mean_reversion.config import MeanReversionConfig
@@ -205,7 +207,9 @@ def cmd_paper(args) -> None:
 
 
 def cmd_positions(args) -> None:
-    """Show current open paper positions with mark-to-market P&L."""
+    """[DEPRECATED] Use: python -m harness.cli positions
+    Positions are now tracked in harness_trades.db. This command shows MR-only legacy positions.
+    """
     from app.services.market_data import fetch_ohlcv
     from mean_reversion.paper_trading import db as paper_db
     from mean_reversion.config import MeanReversionConfig
