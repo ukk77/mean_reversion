@@ -19,6 +19,7 @@ class BollingerConfig:
     # Scale-in support (P2)
     scale_in_enabled: bool = True
     scale_in_zscore: float = -2.5 # Add 2nd tranche if z-score drops further
+    scale_in_capital_fraction: float = 0.5 # Default is 50% of the normal allocation
 
 
 
@@ -114,7 +115,9 @@ SECTOR_MAP: Dict[str, str] = {
     # Consumer Discretionary
     "BABA": "Consumer Discretionary",
     # Industrials
-    "BA": "Industrials",
+    "BA": "Industrials", "LIN": "Industrials",
+    # Technology
+    "IBM": "Technology",
     # Technology ETF
     "XLK": "Technology",
     # Utilities ETF
@@ -209,7 +212,9 @@ class MeanReversionConfig:
         # Consumer Discretionary
         "BABA",
         # Industrials
-        "BA",
+        "BA", "LIN",
+        # Technology
+        "IBM",
         # Sector ETFs — range-bound, ideal MR candidates
         "XLK", "XLU", "XLB", "XLRE",
         # Broad market

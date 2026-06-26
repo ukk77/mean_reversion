@@ -386,18 +386,30 @@ def _run_single_ticker(
               portfolio.is_invested(ticker) and not portfolio.is_short(ticker) and
               zscore <= cfg.bollinger.scale_in_zscore and
               filtered_action == "BUY"):
+            raw_str = abs(zscore / cfg.bollinger.entry_zscore) * vol_mult
             _scale_sig = Signal(
                 ticker=ticker, date=date_str, action="BUY",
                 zscore=zscore,
-                filtered_strength=abs(zscore / cfg.bollinger.entry_zscore) * vol_mult,
+                filtered_strength=min(raw_str, 1.0),
+                raw_strength=raw_str,
                 reason="scale_in",
                 sentiment=overall_sentiment,
                 sentiment_confidence=conf if conf > 0 else None,
                 risk_score=risk_score,
             )
-            scale_n = shares_to_buy(_scale_sig, current_portfolio_value * 0.5,
+            # Allow scale_in_capital_fraction if it exists in config, else default to 0.5
+            scale_base = current_portfolio_value * getattr(cfg.bollinger, 'scale_in_capital_fraction', 0.5)
+            scale_n = shares_to_buy(_scale_sig, scale_base,
                                     exec_price, cfg, kelly_fraction=kelly_fraction,
                                     daily_volume=daily_volume)
+            
+            # Check concentration limits
+            current_shares = portfolio.shares_held(ticker)
+            proposed_notional = (current_shares + scale_n) * exec_price
+            max_notional = current_portfolio_value * cfg.position_sizing.max_position_pct
+            if proposed_notional > max_notional:
+                scale_n = max(0, int((max_notional - current_shares * exec_price) / exec_price))
+                
             if scale_n > 0 and portfolio.buy(ticker, scale_n, exec_price, date_str):
                 scale_in_done[ticker] = True
 
@@ -485,11 +497,12 @@ def run_backtest(
     """
     summary = BacktestSummary()
 
-    for ticker, ohlc in ticker_ohlc.items():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _load_and_run(ticker: str, ohlc: pd.DataFrame) -> Optional[BacktestResult]:
         sentiment_hist = _load_sentiment_history(ticker)
         risk_hist = _load_risk_history(ticker)
-
-        result = _run_single_ticker(
+        return _run_single_ticker(
             ticker=ticker,
             ohlc=ohlc,
             cfg=cfg,
@@ -500,8 +513,21 @@ def run_backtest(
             start_date=start_date,
             end_date=end_date,
         )
-        if result is not None:
-            summary.results[ticker] = result
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(_load_and_run, ticker, ohlc): ticker
+            for ticker, ohlc in ticker_ohlc.items()
+        }
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                result = future.result()
+                if result is not None:
+                    summary.results[ticker] = result
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Error backtesting %s: %s", ticker, e)
 
     valid_curves = [
         r.equity_curve for r in summary.results.values() if not r.equity_curve.empty
