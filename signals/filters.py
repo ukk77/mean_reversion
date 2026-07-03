@@ -75,6 +75,11 @@ def apply_mr_filters(
         if conf < cfg.signal.min_sentiment_confidence:
             filtered = "HOLD"
             reasons.append(f"low_conf={conf:.2f}<{cfg.signal.min_sentiment_confidence}")
+        # Contrarian: extreme bearish is opportunity for mean reversion (oversold + fear).
+        # Must be checked BEFORE block_on_negative_sentiment because extreme bearish
+        # co-occurs with overall_sentiment == "negative" and would otherwise be shadowed.
+        elif contrarian_signal == "extreme_bearish_opportunity":
+            reasons.append("contrarian:extreme_bearish_opportunity(enhanced)")
         elif cfg.signal.block_on_negative_sentiment and overall_sentiment == "negative":
             filtered = "HOLD"
             reasons.append("blocked:negative_sentiment")
@@ -82,9 +87,6 @@ def apply_mr_filters(
         elif contrarian_signal == "extreme_bullish_caution":
             filtered = "HOLD"
             reasons.append("contrarian:extreme_bullish_caution")
-        # Contrarian: extreme bearish is opportunity for mean reversion (oversold + fear)
-        elif contrarian_signal == "extreme_bearish_opportunity":
-            reasons.append("contrarian:extreme_bearish_opportunity(enhanced)")
 
     # ── Risk filter (DB) ─────────────────────────────────────────────────
     risk_score = (risk_data or {}).get("composite_risk_score")
