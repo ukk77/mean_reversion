@@ -30,6 +30,7 @@ from ..indicators.momentum import RSI
 from ..indicators.trend_strength import ADX
 from ..indicators.volatility import ATR, VolatilityRegime
 from ..indicators.volume import VolumeConfirmation, OBV
+from ..indicators.stationarity import adf_is_stationary
 from .filters import apply_mr_filters, Action
 
 try:
@@ -42,6 +43,23 @@ except ImportError:
     def fetch_premarket_gap(ticker): return None  # type: ignore
     def premarket_confirmation_mult(gap, direction, **kw): return 1.0  # type: ignore
     def early_session_size_scalar(**kw): return 1.0  # type: ignore
+
+try:
+    from trading_core.regime_params import get_regime_adjustments, RegimeAdjustments
+except ImportError:
+    def get_regime_adjustments(strategy, **kw):  # type: ignore
+        from dataclasses import dataclass
+        @dataclass
+        class _Neutral:
+            regime: str = "range_bound"
+            regime_detected: bool = False
+            position_size_mult: float = 1.0
+            entry_threshold_mult: float = 1.0
+            stop_width_mult: float = 1.0
+            adx_threshold_mult: float = 1.0
+            sentiment_strictness_mult: float = 1.0
+            max_risk_score_mult: float = 1.0
+        return _Neutral()
 
 _TRADING_ROOT = Path(__file__).resolve().parents[2]
 _SENTIMENT_DB = Path(os.getenv("SENTIMENT_DB_PATH",
@@ -158,6 +176,11 @@ def generate_signal(
     today_str = datetime.now(timezone.utc).date().isoformat()
     reasons: List[str] = []
 
+    # ── Regime-adaptive adjustments ─────────────────────────────────────────
+    regime_adj = get_regime_adjustments("mean_reversion")
+    if regime_adj.regime_detected:
+        reasons.append(f"regime={regime_adj.regime}")
+
     # ── Layer 1: Bollinger Band z-score ───────────────────────────────────────
     if getattr(cfg.bollinger, 'use_vwbb', False):
         bb = VWBB(period=cfg.bollinger.period, std_dev=cfg.bollinger.std_dev)
@@ -166,11 +189,14 @@ def generate_signal(
     zscore = bb.latest_zscore(ohlc) or 0.0
     reasons.append(f"bb={bb.name} z={zscore:+.2f}")
 
-    if zscore <= cfg.bollinger.entry_zscore:
+    # Apply regime-adaptive entry threshold
+    effective_entry_zscore = cfg.bollinger.entry_zscore * regime_adj.entry_threshold_mult
+
+    if zscore <= effective_entry_zscore:
         filtered_action: Action = "BUY"
-    elif zscore >= cfg.bollinger.exit_zscore and zscore < (cfg.short.entry_zscore if cfg.short.enabled else 9999):
+    elif zscore >= cfg.bollinger.exit_zscore and zscore < (cfg.short.entry_zscore * regime_adj.entry_threshold_mult if cfg.short.enabled else 9999):
         filtered_action = "SELL"
-    elif cfg.short.enabled and zscore >= cfg.short.entry_zscore:
+    elif cfg.short.enabled and zscore >= cfg.short.entry_zscore * regime_adj.entry_threshold_mult:
         filtered_action = "SHORT"
     elif cfg.short.enabled and zscore <= cfg.short.exit_zscore:
         filtered_action = "COVER"
@@ -181,10 +207,23 @@ def generate_signal(
     else:
         filtered_action = "HOLD"
 
+    # ── ADF stationarity pre-screen ───────────────────────────────────────────
+    if cfg.stationarity.enabled and filtered_action in ("BUY", "SHORT"):
+        if not adf_is_stationary(
+            ohlc["Close"],
+            lookback=cfg.stationarity.lookback,
+            pvalue_threshold=cfg.stationarity.pvalue_threshold,
+        ):
+            reasons.append("adf=non_stationary(BLOCKED)")
+            filtered_action = "HOLD"
+        else:
+            reasons.append("adf=stationary(OK)")
+
     # ── Layer 2-4: Compute indicator snapshot values ────────────────────────
     adx_value: Optional[float] = None
     if cfg.adx.enabled:
-        adx_ind = ADX(period=cfg.adx.period, threshold=cfg.adx.max_adx)
+        effective_adx_max = cfg.adx.max_adx * regime_adj.adx_threshold_mult
+        adx_ind = ADX(period=cfg.adx.period, threshold=effective_adx_max)
         adx_value = adx_ind.latest_value(ohlc)
 
     rsi_value: Optional[float] = None
@@ -293,8 +332,8 @@ def generate_signal(
                 sector_mult = 0.9
                 reasons.append(f"sector=underperform(x{sector_mult})")
         
-        ref_zscore = cfg.bollinger.entry_zscore if filtered_action == "BUY" else cfg.short.entry_zscore
-        raw_str = abs(zscore / ref_zscore) * sent_mult * contrarian_mult * sector_mult * (vol_regime_mult or 1.0) * pm_mult * es_scalar
+        ref_zscore = effective_entry_zscore if filtered_action == "BUY" else (cfg.short.entry_zscore * regime_adj.entry_threshold_mult)
+        raw_str = abs(zscore / ref_zscore) * sent_mult * contrarian_mult * sector_mult * (vol_regime_mult or 1.0) * pm_mult * es_scalar * regime_adj.position_size_mult
         strength = min(raw_str, 1.0)
     elif filtered_action in ("PARTIAL_SELL", "PARTIAL_COVER"):
         strength = cfg.bollinger.partial_exit_fraction

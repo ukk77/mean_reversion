@@ -41,6 +41,7 @@ from ..signals.generator import Action, Signal
 from ..signals.filters import apply_mr_filters
 from trading_core import compute_all_metrics
 from trading_core import Portfolio
+from trading_core.loss_guard import LossGuard
 
 
 # ── History DB helpers ────────────────────────────────────────────────────────
@@ -224,6 +225,14 @@ def _run_single_ticker(
     slippage = cfg.backtest.slippage
     daily_rf = (1.0 + rf_annual) ** (1.0 / 252) - 1.0
 
+    # Loss guard — circuit-breaker for consecutive losing streaks
+    loss_guard = LossGuard(
+        max_consecutive=cfg.loss_guard.max_consecutive_losses,
+        cooloff_bars=cfg.loss_guard.cooloff_bars,
+        enabled=cfg.loss_guard.enabled,
+    )
+    entry_prices: dict = {}    # ticker -> entry price (for win/loss determination)
+
     # Fixed ATR stop prices — long stops below price, short stops above price
     atr_stops: dict = {}       # ticker -> long stop (stop-out if price <= stop)
     short_stops: dict = {}     # ticker -> short stop (stop-out if price >= stop)
@@ -249,6 +258,9 @@ def _run_single_ticker(
         kelly_fraction = (risk_snap or {}).get("kelly_fraction_capped")
         db_suggested_stop_pct = (risk_snap or {}).get("suggested_stop_loss_pct")
 
+        # ── Tick the loss guard each bar ──────────────────────────────────────
+        loss_guard.tick(ticker)
+
         # ── Cash interest on idle capital ──────────────────────────────────────
         if cfg.backtest.model_cash_interest:
             portfolio.accrue_cash_interest(daily_rf)
@@ -257,9 +269,12 @@ def _run_single_ticker(
         if cfg.atr_stop.enabled and portfolio.is_invested(ticker):
             if ticker in atr_stops and current_price <= atr_stops[ticker]:
                 exec_price = current_price * (1.0 - slippage)
+                # Record loss (stop hit = always a loss)
+                loss_guard.record_loss(ticker)
                 portfolio.sell_all(ticker, exec_price, date_str)
                 atr_stops.pop(ticker, None)
                 entry_dates.pop(ticker, None)
+                entry_prices.pop(ticker, None)
                 portfolio.record_equity(date_str, {ticker: current_price})
                 continue
 
@@ -364,11 +379,12 @@ def _run_single_ticker(
 
         current_portfolio_value = portfolio.equity({ticker: current_price})
 
-        if filtered_action == "BUY" and not portfolio.is_invested(ticker) and not portfolio.is_short(ticker):
+        if filtered_action == "BUY" and not portfolio.is_invested(ticker) and not portfolio.is_short(ticker) and not loss_guard.is_blocked(ticker):
             n_shares = shares_to_buy(sig, current_portfolio_value, exec_price, cfg,
                                      kelly_fraction=kelly_fraction, daily_volume=daily_volume)
             if n_shares > 0 and portfolio.buy(ticker, n_shares, exec_price, date_str):
                 entry_dates[ticker] = dt_date
+                entry_prices[ticker] = exec_price
                 peak_prices[ticker] = exec_price
                 if cfg.atr_stop.enabled:
                     stop_price = None
@@ -417,15 +433,23 @@ def _run_single_ticker(
             portfolio.partial_sell(ticker, cfg.bollinger.partial_exit_fraction, exec_price, date_str)
 
         elif filtered_action == "SELL" and portfolio.is_invested(ticker):
+            # Determine win/loss for guard
+            ep = entry_prices.pop(ticker, None)
+            if ep is not None:
+                if exec_price >= ep:
+                    loss_guard.record_win(ticker)
+                else:
+                    loss_guard.record_loss(ticker)
             portfolio.sell_all(ticker, exec_price, date_str)
             atr_stops.pop(ticker, None)
             peak_prices.pop(ticker, None)
             scale_in_done.pop(ticker, None)
 
-        elif filtered_action == "SHORT" and not portfolio.is_short(ticker) and not portfolio.is_invested(ticker):
+        elif filtered_action == "SHORT" and not portfolio.is_short(ticker) and not portfolio.is_invested(ticker) and not loss_guard.is_blocked(ticker):
             n_shares = shares_to_buy(sig, current_portfolio_value, exec_price, cfg,
                                      kelly_fraction=kelly_fraction, daily_volume=daily_volume)
             if n_shares > 0 and portfolio.short(ticker, n_shares, exec_price, date_str):
+                entry_prices[ticker] = exec_price
                 if cfg.atr_stop.enabled:
                     atr_val = _val(atr_series, dt, 0.0)
                     if atr_val > 0:
@@ -435,6 +459,13 @@ def _run_single_ticker(
             portfolio.partial_cover(ticker, cfg.short.partial_exit_fraction, exec_price, date_str)
 
         elif filtered_action == "COVER" and portfolio.is_short(ticker):
+            # Determine win/loss for shorts (short wins when cover_price < entry_price)
+            ep = entry_prices.pop(ticker, None)
+            if ep is not None:
+                if exec_price <= ep:
+                    loss_guard.record_win(ticker)
+                else:
+                    loss_guard.record_loss(ticker)
             portfolio.cover_all(ticker, exec_price, date_str)
             short_stops.pop(ticker, None)
 

@@ -180,6 +180,20 @@ class VolumeFlowConfig:
     obv_ema_period: int = 10
 
 @dataclass
+class StationarityConfig:
+    """ADF stationarity pre-screen for mean-reversion validation."""
+    enabled: bool = True
+    lookback: int = 60               # Bars of history for the ADF test
+    pvalue_threshold: float = 0.10   # Reject unit-root below this p-value (0.05 strict, 0.10 moderate)
+
+@dataclass
+class LossGuardConfig:
+    """Circuit-breaker for per-ticker consecutive losing streaks."""
+    enabled: bool = True
+    max_consecutive_losses: int = 3  # Block after N consecutive losses
+    cooloff_bars: int = 5            # Wait N bars before re-enabling
+
+@dataclass
 class MeanReversionConfig:
     """Master configuration combining all sub-configs."""
     bollinger: BollingerConfig = field(default_factory=BollingerConfig)
@@ -189,6 +203,8 @@ class MeanReversionConfig:
     volume: VolumeConfig = field(default_factory=VolumeConfig)
     volume_flow: VolumeFlowConfig = field(default_factory=VolumeFlowConfig)
     vol_regime: VolatilityRegimeConfig = field(default_factory=VolatilityRegimeConfig)
+    stationarity: StationarityConfig = field(default_factory=StationarityConfig)
+    loss_guard: LossGuardConfig = field(default_factory=LossGuardConfig)
     signal: SignalConfig = field(default_factory=SignalConfig)
     position_sizing: PositionSizingConfig = field(default_factory=PositionSizingConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
