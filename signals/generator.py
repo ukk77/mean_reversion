@@ -32,6 +32,7 @@ from ..indicators.volatility import ATR, VolatilityRegime
 from ..indicators.volume import VolumeConfirmation, OBV
 from ..indicators.stationarity import adf_is_stationary
 from .filters import apply_mr_filters, Action
+from trading_core.signal_strength import saturate
 
 try:
     from trading_core.session_context import (
@@ -334,14 +335,14 @@ def generate_signal(
         
         ref_zscore = effective_entry_zscore if filtered_action == "BUY" else (cfg.short.entry_zscore * regime_adj.entry_threshold_mult)
         raw_str = abs(zscore / ref_zscore) * sent_mult * contrarian_mult * sector_mult * (vol_regime_mult or 1.0) * pm_mult * es_scalar * regime_adj.position_size_mult
-        strength = min(raw_str, 1.0)
+        strength = saturate(raw_str)
     elif filtered_action in ("PARTIAL_SELL", "PARTIAL_COVER"):
         strength = cfg.bollinger.partial_exit_fraction
         raw_str = strength
     else:  # SELL / COVER
         ref = cfg.bollinger.exit_zscore if filtered_action == "SELL" else cfg.short.exit_zscore
         raw_str = abs(zscore / ref) if ref != 0 else 1.0
-        strength = min(raw_str, 1.0)
+        strength = saturate(raw_str)
 
     return Signal(
         ticker=ticker,
